@@ -14,17 +14,17 @@ MAX_METER = 20
 class PlacementModel(nn.Module):
     """Per-frame step-onset probability from (T,3,80) mels + difficulty."""
 
-    def __init__(self, rnn_hidden: int = 128, rnn_layers: int = 2):
+    def __init__(self, rnn_hidden: int = 192, rnn_layers: int = 2):
         super().__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(3, 24, kernel_size=(7, 3), padding=(3, 1)),   # (time, freq)
+            nn.Conv2d(3, 32, kernel_size=(7, 3), padding=(3, 1)),   # (time, freq)
             nn.ReLU(),
             nn.MaxPool2d((1, 3)),
-            nn.Conv2d(24, 48, kernel_size=(3, 3), padding=(1, 1)),
+            nn.Conv2d(32, 64, kernel_size=(3, 3), padding=(1, 1)),
             nn.ReLU(),
             nn.MaxPool2d((1, 3)),
         )
-        conv_out = 48 * (80 // 3 // 3)      # 48 * 8 = 384
+        conv_out = 64 * (80 // 3 // 3)      # 64 * 8 = 512
         self.diff_emb = nn.Embedding(N_DIFF, 16)
         self.meter_emb = nn.Embedding(MAX_METER, 16)
         self.rnn = nn.GRU(conv_out + 32, rnn_hidden, num_layers=rnn_layers,
