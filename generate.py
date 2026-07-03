@@ -103,6 +103,63 @@ def run_placement(model, feat, diff_i, meter, device):
     return probs / np.maximum(weight, 1e-9)
 
 
+def active_duration(probs, thresh=0.25):
+    """Seconds of actually-charted music: first->last confident onset,
+    minus silent gaps > 3s (intros/outros/breakdowns don't count)."""
+    idx = np.where(probs > thresh)[0]
+    if len(idx) < 10:
+        return 0.0
+    dur = (idx[-1] - idx[0]) / FPS
+    gaps = np.diff(idx)
+    dead = gaps[gaps > 3 * FPS].sum() / FPS
+    return max(dur - dead, 10.0)
+
+
+# max consecutive steps at 16th-note spacing, by level (DDR convention:
+# low levels get isolated 16ths at most, streams only appear high up)
+def max_run16(level: int) -> int:
+    if level <= 9:
+        return 2
+    if level <= 12:
+        return 4
+    if level <= 13:
+        return 6
+    if level <= 14:
+        return 8
+    if level <= 15:
+        return 12
+    if level <= 16:
+        return 24
+    return 10 ** 9
+
+
+def cap_fast_runs(picked, max_run):
+    """picked: sorted (beat, time, prob). Trim runs of steps spaced <= 1/4
+    beat down to max_run by dropping the weakest steps inside the run."""
+    if max_run >= 10 ** 9:
+        return picked
+    picked = list(picked)
+    changed = True
+    while changed:
+        changed = False
+        i = 0
+        while i < len(picked):
+            j = i
+            while (j + 1 < len(picked)
+                   and picked[j + 1][0] - picked[j][0] <= 0.26):
+                j += 1
+            run_len = j - i + 1
+            if run_len > max_run:
+                # drop the lowest-probability interior step of this run
+                interior = range(i + 1, j)
+                drop = min(interior, key=lambda k: picked[k][2])
+                del picked[drop]
+                changed = True
+            else:
+                i = j + 1
+    return picked
+
+
 def pick_steps(probs, bpm, t0, grids, target_count, min_gap_beats):
     """Snap placement probabilities to the beat grid, take best target_count."""
     spb = 60.0 / bpm
@@ -137,7 +194,7 @@ def pick_steps(probs, bpm, t0, grids, target_count, min_gap_beats):
     for score, cb, t, p in scored:
         if len(picked) >= target_count:
             break
-        if p < 0.06:
+        if p < 0.15:
             continue
         if any(abs(cb - u) < min_gap_beats - 1e-6 for u in used):
             continue
@@ -397,11 +454,16 @@ def main():
     for slot, level in wanted:
         grids = SLOT_GRIDS[slot]
         nps = METER_NPS.get(level, 3.0)
-        target = int(nps * max(dur - t0 - 3, 10))
-        print(f"[3/5] placing steps: {slot} lv{level} (~{target} steps)")
+        print(f"[3/5] placing steps: {slot} lv{level}")
         probs = run_placement(place, feat, DIFF_IDX[slot], level, device)
+        act = active_duration(probs)
+        if act <= 0:
+            act = max(dur - t0 - 3, 10)
+        target = int(nps * act)
+        print(f"      active music {act:.0f}s -> target ~{target} steps")
         min_gap = min(g for g in grids)
         steps = pick_steps(probs, bpm, t0, grids, target, min_gap)
+        steps = cap_fast_runs(steps, max_run16(level))
         print(f"      placed {len(steps)} steps")
         if len(steps) < 10:
             print("      too few steps, skipping slot")
